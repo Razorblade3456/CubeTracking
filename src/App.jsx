@@ -43,7 +43,11 @@ function App() {
   const [isAttacking, setIsAttacking] = useState(false);
   const [targetIds, setTargetIds] = useState([]);
   const [smashedIds, setSmashedIds] = useState([]);
+  const [projectiles, setProjectiles] = useState([]);
   const attackTimeoutRef = useRef(null);
+  const boardRef = useRef(null);
+  const muzzleRef = useRef(null);
+  const itemRefs = useRef(new Map());
 
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
@@ -84,7 +88,7 @@ function App() {
 
     setItems((prev) => [newItem, ...prev]);
     setForm(initialForm);
-    showToast('Enemy cube spawned.');
+    showToast('Enemy bug spawned.');
   };
 
   const handleDelete = (id) => {
@@ -94,10 +98,11 @@ function App() {
     const shouldDelete = window.confirm(`Delete "${target.text}"?`);
     if (!shouldDelete) return;
 
+    itemRefs.current.delete(id);
     setItems((prev) => prev.filter((item) => item.id !== id));
     setSmashedIds((prev) => prev.filter((value) => value !== id));
     setTargetIds((prev) => prev.filter((value) => value !== id));
-    showToast('Cube removed.');
+    showToast('Bug removed.');
 
     if (editingId === id) {
       setEditingId(null);
@@ -123,11 +128,45 @@ function App() {
 
     if (isCurrentlyComplete) {
       setSmashedIds((prev) => prev.filter((value) => value !== id));
-      showToast('Cube restored to battle.');
+      showToast('Bug restored to battle.');
       return;
     }
 
-    showToast('Task complete. Press play to smash cube.');
+    showToast('Task complete. Press play to zap bug.');
+  };
+
+  const buildProjectilePaths = (pendingTargets) => {
+    const boardRect = boardRef.current?.getBoundingClientRect();
+    const muzzleRect = muzzleRef.current?.getBoundingClientRect();
+
+    if (!boardRect || !muzzleRect) return [];
+
+    const startX = muzzleRect.left - boardRect.left + muzzleRect.width * 0.5;
+    const startY = muzzleRect.top - boardRect.top + muzzleRect.height * 0.5;
+
+    return pendingTargets
+      .map((id, index) => {
+        const targetElement = itemRefs.current.get(id);
+        if (!targetElement) return null;
+
+        const targetRect = targetElement.getBoundingClientRect();
+        const endX = targetRect.left - boardRect.left + targetRect.width * 0.5;
+        const endY = targetRect.top - boardRect.top + targetRect.height * 0.56;
+
+        const deltaX = endX - startX;
+        const deltaY = endY - startY;
+        const length = Math.hypot(deltaX, deltaY);
+
+        return {
+          id,
+          startX,
+          startY,
+          length,
+          angle: (Math.atan2(deltaY, deltaX) * 180) / Math.PI,
+          delay: index * 85
+        };
+      })
+      .filter(Boolean);
   };
 
   const playCubeSmash = () => {
@@ -136,11 +175,14 @@ function App() {
     const pendingTargets = completedItems.filter((item) => !smashedIds.includes(item.id)).map((item) => item.id);
 
     if (pendingTargets.length === 0) {
-      showToast('No completed cubes ready to smash yet.');
+      showToast('No completed bugs ready to zap yet.');
       return;
     }
 
+    const projectilePaths = buildProjectilePaths(pendingTargets);
+
     setTargetIds(pendingTargets);
+    setProjectiles(projectilePaths);
     setIsAttacking(true);
     showToast('Tower firing...');
 
@@ -148,7 +190,8 @@ function App() {
       setSmashedIds((prev) => [...new Set([...prev, ...pendingTargets])]);
       setIsAttacking(false);
       setTargetIds([]);
-      showToast(`Tower smashed ${pendingTargets.length} cube${pendingTargets.length > 1 ? 's' : ''}.`);
+      setProjectiles([]);
+      showToast(`Tower zapped ${pendingTargets.length} bug${pendingTargets.length > 1 ? 's' : ''}.`);
     }, ATTACK_DURATION);
   };
 
@@ -187,21 +230,38 @@ function App() {
     <div className="app-shell">
       <header className="board-section">
         <div className="board-headline">
-          <h1>Cube Smash</h1>
-          <p>Spawn enemy cubes for each habit or to-do, then smash them by completing tasks.</p>
+          <h1>Bug Smash</h1>
+          <p>Spawn enemy bugs for each habit or to-do, then zap them by completing tasks.</p>
         </div>
 
-        <div className={`cube-board ${isAttacking ? 'is-attacking' : ''}`} aria-label="Enemy cube board">
+        <div ref={boardRef} className={`cube-board ${isAttacking ? 'is-attacking' : ''}`} aria-label="Enemy bug board">
           <div className="board-ground" />
           <div className="board-tower" aria-hidden="true">
-            <span />
+            <span className="tower-window" />
+            <span ref={muzzleRef} className="tower-muzzle" />
           </div>
 
-          {isAttacking && <div className="tower-beam" aria-hidden="true" />}
+          {isAttacking && projectiles.length > 0 && (
+            <div className="tower-projectiles" aria-hidden="true">
+              {projectiles.map((projectile) => (
+                <span
+                  key={projectile.id}
+                  className="tower-projectile"
+                  style={{
+                    left: `${projectile.startX}px`,
+                    top: `${projectile.startY}px`,
+                    width: `${projectile.length}px`,
+                    transform: `rotate(${projectile.angle}deg)`,
+                    '--shot-delay': `${projectile.delay}ms`
+                  }}
+                />
+              ))}
+            </div>
+          )}
 
           <div className="cube-grid">
             {items.length === 0 ? (
-              <div className="board-empty">No cubes yet. Add your first mission below.</div>
+              <div className="board-empty">No bugs yet. Add your first mission below.</div>
             ) : (
               items.map((item, index) => {
                 const isTargeted = targetIds.includes(item.id);
@@ -215,12 +275,26 @@ function App() {
                     }`}
                     style={{ '--delay': `${(index % 10) * 45}ms` }}
                     title={item.text}
+                    ref={(node) => {
+                      if (node) itemRefs.current.set(item.id, node);
+                      else itemRefs.current.delete(item.id);
+                    }}
                   >
                     <p className="cube-name">{item.text}</p>
                     <div className="cube-voxel" aria-hidden="true">
-                      <div className="cube-top" />
-                      <div className="cube-front" />
-                      <div className="cube-side" />
+                      <div className="roach-sprite">
+                        <span className="roach-core" />
+                        <span className="roach-eye roach-eye-left" />
+                        <span className="roach-eye roach-eye-right" />
+                        <span className="roach-antenna roach-antenna-left" />
+                        <span className="roach-antenna roach-antenna-right" />
+                        <span className="roach-leg roach-leg-left-top" />
+                        <span className="roach-leg roach-leg-left-mid" />
+                        <span className="roach-leg roach-leg-left-bottom" />
+                        <span className="roach-leg roach-leg-right-top" />
+                        <span className="roach-leg roach-leg-right-mid" />
+                        <span className="roach-leg roach-leg-right-bottom" />
+                      </div>
                     </div>
                     {item.completed && <span className="cube-skull" aria-hidden="true">☠</span>}
                     {item.completed && <span className="cube-tag">ready</span>}
