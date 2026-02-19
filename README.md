@@ -20,3 +20,8 @@ npm run dev
 ```
 
 Then open the local Vite URL shown in the terminal (usually `http://localhost:5173`).
+
+
+## Troubleshooting
+
+If `npm run dev` prints a generic `vite [options]` help screen, run `npm install` first so the local project Vite binary is installed.
