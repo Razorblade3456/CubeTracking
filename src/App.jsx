@@ -222,6 +222,7 @@ function App() {
                       <div className="cube-front" />
                       <div className="cube-side" />
                     </div>
+                    {item.completed && <span className="cube-skull" aria-hidden="true">☠</span>}
                     {item.completed && <span className="cube-tag">ready</span>}
                   </article>
                 );

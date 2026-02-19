@@ -138,14 +138,27 @@ body {
   color: #90f4ff;
 }
 
-.cube.is-complete {
-  opacity: 0.7;
+.cube-skull {
+  position: absolute;
+  top: 33px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  font-size: 1.32rem;
+  line-height: 1;
+  color: #0d1734;
+  background: linear-gradient(180deg, #ffffff, #dbe7ff);
+  border: 1px solid rgba(9, 20, 49, 0.5);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.35);
+  z-index: 4;
 }
 
-.cube.is-complete .cube-top,
-.cube.is-complete .cube-front,
-.cube.is-complete .cube-side {
-  background: linear-gradient(140deg, #90a0be, #5e6470);
+.cube.is-complete {
+  opacity: 1;
 }
 
 .cube.is-targeted .cube-voxel {
@@ -185,16 +198,21 @@ body {
 
 .tower-beam {
   position: absolute;
-  right: 106px;
-  bottom: 95px;
-  width: min(340px, 65%);
-  height: 8px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, rgba(255, 72, 72, 0.1), rgba(255, 32, 32, 1));
-  transform-origin: right center;
-  transform: rotate(-32deg);
-  z-index: 2;
-  animation: laserSweep 800ms ease-in-out infinite alternate;
+  inset: -12% -6% -12% -6%;
+  background: linear-gradient(135deg, rgba(255, 50, 50, 0.24), rgba(255, 16, 16, 0.72));
+  clip-path: polygon(98% 80%, 98% 90%, 0 28%, 0 16%);
+  filter: drop-shadow(0 0 18px rgba(255, 56, 56, 0.55));
+  z-index: 3;
+  pointer-events: none;
+  animation: laserSweep 650ms ease-in-out infinite alternate;
+}
+
+.tower-beam::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  clip-path: polygon(98% 84%, 98% 87%, 0 24%, 0 21%);
+  background: linear-gradient(135deg, rgba(255, 156, 156, 0.18), rgba(255, 255, 255, 0.85));
 }
 
 .play-button {
@@ -386,10 +404,12 @@ body {
 
 @keyframes laserSweep {
   from {
-    transform: rotate(-18deg) scaleX(0.9);
+    opacity: 0.58;
+    transform: translateX(8px) translateY(-8px);
   }
   to {
-    transform: rotate(-36deg) scaleX(1.03);
+    opacity: 0.95;
+    transform: translateX(-10px) translateY(8px);
   }
 }
 
@@ -414,8 +434,7 @@ body {
   }
 
   .tower-beam {
-    right: 89px;
-    width: min(250px, 52%);
+    inset: -16% -10% -16% -10%;
   }
 
   .add-form {
