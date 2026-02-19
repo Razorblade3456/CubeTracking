@@ -5,7 +5,9 @@ const TOAST_DURATION = 1800;
 const ATTACK_DURATION = 1400;
 
 const initialForm = {
-  text: ''
+  text: '',
+  note: '',
+  difficulty: 'medium'
 };
 
 function safeParseItems(rawValue) {
@@ -20,14 +22,63 @@ function safeParseItems(rawValue) {
       .map((item) => ({
         id: String(item.id ?? crypto.randomUUID()),
         text: String(item.text ?? '').trim(),
+        note: String(item.note ?? '').trim(),
+        negatives: Math.max(0, Number(item.negatives ?? 0) || 0),
+        difficulty: ['easy', 'medium', 'hard'].includes(item.difficulty) ? item.difficulty : 'medium',
         createdAt: Number(item.createdAt ?? Date.now()),
         completed: Boolean(item.completed),
+        queued: Boolean(item.queued),
         completedAt: item.completedAt ? Number(item.completedAt) : null
       }))
       .filter((item) => item.text.length > 0);
   } catch {
     return [];
   }
+}
+
+
+function startOfDay(value) {
+  const date = new Date(value);
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
+
+function isSameDay(first, second) {
+  return first.getFullYear() === second.getFullYear() && first.getMonth() === second.getMonth() && first.getDate() === second.getDate();
+}
+
+function buildCompletionBuckets(items, range) {
+  const now = new Date();
+  const days = [];
+
+  if (range === 'weekly') {
+    for (let offset = 6; offset >= 0; offset -= 1) {
+      const day = startOfDay(now);
+      day.setDate(now.getDate() - offset);
+      days.push({ key: day.toISOString(), date: day, label: day.toLocaleDateString([], { weekday: 'short' }) });
+    }
+  } else {
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+
+    for (let dayNumber = 0; dayNumber < daysInMonth; dayNumber += 1) {
+      const day = startOfDay(monthStart);
+      day.setDate(monthStart.getDate() + dayNumber);
+      days.push({ key: day.toISOString(), date: day, label: String(day.getDate()) });
+    }
+  }
+
+  return days.map((day) => {
+    const total = items.filter((item) => isSameDay(startOfDay(item.createdAt), day.date)).length;
+    const completed = items.filter((item) => item.completedAt && isSameDay(startOfDay(item.completedAt), day.date)).length;
+
+    return {
+      ...day,
+      total,
+      completed,
+      ratio: `${completed}/${total}`
+    };
+  });
 }
 
 function App() {
@@ -39,11 +90,17 @@ function App() {
   const [form, setForm] = useState(initialForm);
   const [editingId, setEditingId] = useState(null);
   const [editingText, setEditingText] = useState('');
+  const [editingNote, setEditingNote] = useState('');
   const [toast, setToast] = useState('');
   const [isAttacking, setIsAttacking] = useState(false);
   const [targetIds, setTargetIds] = useState([]);
   const [smashedIds, setSmashedIds] = useState([]);
+  const [projectiles, setProjectiles] = useState([]);
+  const [analyticsRange, setAnalyticsRange] = useState('weekly');
   const attackTimeoutRef = useRef(null);
+  const boardRef = useRef(null);
+  const muzzleRef = useRef(null);
+  const itemRefs = useRef(new Map());
 
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
@@ -63,6 +120,7 @@ function App() {
 
   const activeItems = useMemo(() => items.filter((item) => !item.completed), [items]);
   const completedItems = useMemo(() => items.filter((item) => item.completed), [items]);
+  const completionBuckets = useMemo(() => buildCompletionBuckets(items, analyticsRange), [items, analyticsRange]);
 
   const showToast = (message) => setToast(message);
 
@@ -70,21 +128,24 @@ function App() {
     event.preventDefault();
     const trimmed = form.text.trim();
     if (!trimmed) {
-      showToast('Please enter a habit or to-do first.');
+      showToast('Please enter a to-do first.');
       return;
     }
 
     const newItem = {
       id: crypto.randomUUID(),
       text: trimmed,
+      note: form.note.trim(),
+      difficulty: form.difficulty,
       createdAt: Date.now(),
       completed: false,
+      queued: false,
       completedAt: null
     };
 
     setItems((prev) => [newItem, ...prev]);
     setForm(initialForm);
-    showToast('Enemy cube spawned.');
+    showToast('Enemy bug spawned.');
   };
 
   const handleDelete = (id) => {
@@ -94,72 +155,160 @@ function App() {
     const shouldDelete = window.confirm(`Delete "${target.text}"?`);
     if (!shouldDelete) return;
 
+    itemRefs.current.delete(id);
     setItems((prev) => prev.filter((item) => item.id !== id));
     setSmashedIds((prev) => prev.filter((value) => value !== id));
     setTargetIds((prev) => prev.filter((value) => value !== id));
-    showToast('Cube removed.');
+    showToast('Bug removed.');
 
     if (editingId === id) {
       setEditingId(null);
       setEditingText('');
+      setEditingNote('');
     }
   };
 
   const toggleComplete = (id) => {
-    const isCurrentlyComplete = items.find((item) => item.id === id)?.completed;
+    const target = items.find((item) => item.id === id);
+    if (!target) return;
+
+    const isArmedOrCompleted = target.queued || target.completed;
 
     setItems((prev) =>
       prev.map((item) => {
         if (item.id !== id) return item;
 
-        const nextCompleted = !item.completed;
+        if (isArmedOrCompleted) {
+          return {
+            ...item,
+            queued: false,
+            completed: false,
+            completedAt: null
+          };
+        }
+
         return {
           ...item,
-          completed: nextCompleted,
-          completedAt: nextCompleted ? Date.now() : null
+          queued: true,
+          completed: false,
+          completedAt: null
         };
       })
     );
 
-    if (isCurrentlyComplete) {
+    if (isArmedOrCompleted) {
       setSmashedIds((prev) => prev.filter((value) => value !== id));
-      showToast('Cube restored to battle.');
+      showToast('Bug restored to open tasks.');
       return;
     }
 
-    showToast('Task complete. Press play to smash cube.');
+    showToast('Task checked. Press play to zap bug.');
+  };
+
+  const markIncomplete = (id) => {
+    setItems((prev) =>
+      prev.map((item) =>
+        item.id === id
+          ? {
+              ...item,
+              negatives: (item.negatives ?? 0) + 1,
+              queued: false,
+              completed: false,
+              completedAt: null
+            }
+          : item
+      )
+    );
+
+    setSmashedIds((prev) => prev.filter((value) => value !== id));
+    setTargetIds((prev) => prev.filter((value) => value !== id));
+    showToast('Marked incomplete. Negative added.');
+  };
+
+  const buildProjectilePaths = (pendingTargets) => {
+    const boardRect = boardRef.current?.getBoundingClientRect();
+    const muzzleRect = muzzleRef.current?.getBoundingClientRect();
+
+    if (!boardRect || !muzzleRect) return [];
+
+    const startX = muzzleRect.left - boardRect.left + muzzleRect.width * 0.5;
+    const startY = muzzleRect.top - boardRect.top + muzzleRect.height * 0.5;
+
+    return pendingTargets
+      .map((id, index) => {
+        const targetElement = itemRefs.current.get(id);
+        if (!targetElement) return null;
+
+        const targetRect = targetElement.getBoundingClientRect();
+        const endX = targetRect.left - boardRect.left + targetRect.width * 0.5;
+        const endY = targetRect.top - boardRect.top + targetRect.height * 0.56;
+
+        const deltaX = endX - startX;
+        const deltaY = endY - startY;
+        const length = Math.hypot(deltaX, deltaY);
+
+        return {
+          id,
+          startX,
+          startY,
+          length,
+          angle: (Math.atan2(deltaY, deltaX) * 180) / Math.PI,
+          delay: index * 85
+        };
+      })
+      .filter(Boolean);
   };
 
   const playCubeSmash = () => {
     if (isAttacking) return;
 
-    const pendingTargets = completedItems.filter((item) => !smashedIds.includes(item.id)).map((item) => item.id);
+    const pendingTargets = items.filter((item) => item.queued && !item.completed).map((item) => item.id);
 
     if (pendingTargets.length === 0) {
-      showToast('No completed cubes ready to smash yet.');
+      showToast('No checked bugs ready to zap yet.');
       return;
     }
 
+    const projectilePaths = buildProjectilePaths(pendingTargets);
+
     setTargetIds(pendingTargets);
+    setProjectiles(projectilePaths);
     setIsAttacking(true);
     showToast('Tower firing...');
 
     attackTimeoutRef.current = window.setTimeout(() => {
+      const completedAt = Date.now();
+
+      setItems((prev) =>
+        prev.map((item) =>
+          pendingTargets.includes(item.id)
+            ? {
+                ...item,
+                queued: false,
+                completed: true,
+                completedAt
+              }
+            : item
+        )
+      );
       setSmashedIds((prev) => [...new Set([...prev, ...pendingTargets])]);
       setIsAttacking(false);
       setTargetIds([]);
-      showToast(`Tower smashed ${pendingTargets.length} cube${pendingTargets.length > 1 ? 's' : ''}.`);
+      setProjectiles([]);
+      showToast(`Tower zapped ${pendingTargets.length} bug${pendingTargets.length > 1 ? 's' : ''}.`);
     }, ATTACK_DURATION);
   };
 
   const startEdit = (item) => {
     setEditingId(item.id);
     setEditingText(item.text);
+    setEditingNote(item.note ?? '');
   };
 
   const cancelEdit = () => {
     setEditingId(null);
     setEditingText('');
+    setEditingNote('');
   };
 
   const saveEdit = (id) => {
@@ -169,9 +318,12 @@ function App() {
       return;
     }
 
-    setItems((prev) => prev.map((item) => (item.id === id ? { ...item, text: trimmed } : item)));
+    const trimmedNote = editingNote.trim();
+
+    setItems((prev) => prev.map((item) => (item.id === id ? { ...item, text: trimmed, note: trimmedNote } : item)));
     setEditingId(null);
     setEditingText('');
+    setEditingNote('');
     showToast('Item updated.');
   };
 
@@ -187,25 +339,46 @@ function App() {
     <div className="app-shell">
       <header className="board-section">
         <div className="board-headline">
-          <h1>Cube Smash</h1>
-          <p>Spawn enemy cubes for each habit or to-do, then smash them by completing tasks.</p>
+          <h1>Bug Smash</h1>
+          <p>Spawn enemy bugs for each to-do, then zap them by completing tasks.</p>
         </div>
 
-        <div className={`cube-board ${isAttacking ? 'is-attacking' : ''}`} aria-label="Enemy cube board">
+        <div ref={boardRef} className={`cube-board ${isAttacking ? 'is-attacking' : ''}`} aria-label="Enemy bug board">
           <div className="board-ground" />
           <div className="board-tower" aria-hidden="true">
-            <span />
+            <span className="tower-window" />
+            <span ref={muzzleRef} className="tower-muzzle" />
           </div>
 
-          {isAttacking && <div className="tower-beam" aria-hidden="true" />}
+          {isAttacking && projectiles.length > 0 && (
+            <div className="tower-projectiles" aria-hidden="true">
+              {projectiles.map((projectile) => (
+                <span
+                  key={projectile.id}
+                  className="tower-projectile"
+                  style={{
+                    left: `${projectile.startX}px`,
+                    top: `${projectile.startY}px`,
+                    width: `${projectile.length}px`,
+                    transform: `rotate(${projectile.angle}deg)`,
+                    '--shot-delay': `${projectile.delay}ms`
+                  }}
+                />
+              ))}
+            </div>
+          )}
 
           <div className="cube-grid">
-            {items.length === 0 ? (
-              <div className="board-empty">No cubes yet. Add your first mission below.</div>
+            {activeItems.length === 0 ? (
+              <div className="board-empty">No bugs yet. Add your first mission below.</div>
             ) : (
-              items.map((item, index) => {
+              activeItems.map((item, index) => {
                 const isTargeted = targetIds.includes(item.id);
                 const isSmashed = smashedIds.includes(item.id);
+                const isReady = item.queued || item.completed;
+                const difficulty = item.difficulty ?? 'medium';
+                const negativeTier =
+                  item.negatives >= 10 ? 'is-negative-10' : item.negatives >= 5 ? 'is-negative-5' : item.negatives >= 1 ? 'is-negative-1' : '';
 
                 return (
                   <article
@@ -215,15 +388,47 @@ function App() {
                     }`}
                     style={{ '--delay': `${(index % 10) * 45}ms` }}
                     title={item.text}
+                    ref={(node) => {
+                      if (node) itemRefs.current.set(item.id, node);
+                      else itemRefs.current.delete(item.id);
+                    }}
                   >
                     <p className="cube-name">{item.text}</p>
                     <div className="cube-voxel" aria-hidden="true">
-                      <div className="cube-top" />
-                      <div className="cube-front" />
-                      <div className="cube-side" />
+                      <div className={`roach-sprite ${negativeTier} difficulty-${difficulty}`.trim()}>
+                        <span className="roach-core" />
+                        <span className="roach-eye roach-eye-left" />
+                        <span className="roach-eye roach-eye-right" />
+                        {(difficulty === 'hard' || item.negatives >= 10) && <span className="roach-brow roach-brow-left" />}
+                        {(difficulty === 'hard' || item.negatives >= 10) && <span className="roach-brow roach-brow-right" />}
+                        {difficulty === 'hard' ? (
+                          <>
+                            <span className="roach-horn roach-horn-left" />
+                            <span className="roach-horn roach-horn-right" />
+                          </>
+                        ) : (
+                          <>
+                            <span className="roach-antenna roach-antenna-left" />
+                            <span className="roach-antenna roach-antenna-right" />
+                          </>
+                        )}
+                        {difficulty === 'easy' && (
+                          <>
+                            <span className="roach-hat" />
+                            <span className="roach-propeller-pole" />
+                            <span className="roach-propeller-blade" />
+                          </>
+                        )}
+                        <span className="roach-leg roach-leg-left-top" />
+                        <span className="roach-leg roach-leg-left-mid" />
+                        <span className="roach-leg roach-leg-left-bottom" />
+                        <span className="roach-leg roach-leg-right-top" />
+                        <span className="roach-leg roach-leg-right-mid" />
+                        <span className="roach-leg roach-leg-right-bottom" />
+                      </div>
                     </div>
-                    {item.completed && <span className="cube-skull" aria-hidden="true">☠</span>}
-                    {item.completed && <span className="cube-tag">ready</span>}
+                    {isReady && <span className="cube-skull" aria-hidden="true">☠</span>}
+                    {isReady && <span className="cube-tag">ready</span>}
                   </article>
                 );
               })
@@ -239,22 +444,39 @@ function App() {
       <main className="list-section">
         <section className="todo-card">
           <div className="card-heading">
-            <h2>Habits / To-Dos</h2>
-            <p>Track missions, edit details, and keep momentum with one-tap complete and undo.</p>
+            <h2>To-Do List</h2>
+            <p>Track missions, add optional notes, and use ✓ Complete or - Incomplete for spooky momentum.</p>
           </div>
 
           <form className="add-form" onSubmit={handleAdd}>
             <input
               value={form.text}
-              onChange={(event) => setForm({ text: event.target.value })}
-              placeholder="Add a new habit or to-do"
-              aria-label="Habit or to-do text"
+              onChange={(event) => setForm((prev) => ({ ...prev, text: event.target.value }))}
+              placeholder="Add a new to-do"
+              aria-label="To-do text"
             />
+            <textarea
+              className="add-note"
+              value={form.note}
+              onChange={(event) => setForm((prev) => ({ ...prev, note: event.target.value }))}
+              placeholder="Optional notes"
+              aria-label="Optional note"
+              rows={2}
+            />
+            <select
+              value={form.difficulty}
+              onChange={(event) => setForm((prev) => ({ ...prev, difficulty: event.target.value }))}
+              aria-label="Difficulty"
+            >
+              <option value="easy">Easy</option>
+              <option value="medium">Medium</option>
+              <option value="hard">Hard</option>
+            </select>
             <button type="submit">Add Item</button>
           </form>
 
           <div className="list-group">
-            <h3>Open ({activeItems.length})</h3>
+            <h3>Open / Checked ({activeItems.length})</h3>
             {activeItems.length === 0 ? (
               <p className="empty-state">No open tasks. Add one above.</p>
             ) : (
@@ -264,11 +486,14 @@ function App() {
                   item={item}
                   editingId={editingId}
                   editingText={editingText}
+                  editingNote={editingNote}
                   onEditTextChange={setEditingText}
+                  onEditNoteChange={setEditingNote}
                   onStartEdit={startEdit}
                   onCancelEdit={cancelEdit}
                   onSaveEdit={saveEdit}
                   onToggleComplete={toggleComplete}
+                  onMarkIncomplete={markIncomplete}
                   onDelete={handleDelete}
                   formatDate={formatDate}
                 />
@@ -279,7 +504,7 @@ function App() {
           <div className="list-group completed">
             <h3>Completed ({completedItems.length})</h3>
             {completedItems.length === 0 ? (
-              <p className="empty-state">Complete a task to arm the tower.</p>
+              <p className="empty-state">Check a task, then press play to zap it.</p>
             ) : (
               completedItems.map((item) => (
                 <ItemRow
@@ -287,16 +512,50 @@ function App() {
                   item={item}
                   editingId={editingId}
                   editingText={editingText}
+                  editingNote={editingNote}
                   onEditTextChange={setEditingText}
+                  onEditNoteChange={setEditingNote}
                   onStartEdit={startEdit}
                   onCancelEdit={cancelEdit}
                   onSaveEdit={saveEdit}
                   onToggleComplete={toggleComplete}
+                  onMarkIncomplete={markIncomplete}
                   onDelete={handleDelete}
                   formatDate={formatDate}
                 />
               ))
             )}
+          </div>
+
+          <div className="stats-card">
+            <div className="stats-head">
+              <h3>Completed Task Data</h3>
+              <div className="stats-toggle" role="tablist" aria-label="Stats range">
+                <button
+                  type="button"
+                  className={analyticsRange === 'weekly' ? 'is-active' : ''}
+                  onClick={() => setAnalyticsRange('weekly')}
+                >
+                  Weekly
+                </button>
+                <button
+                  type="button"
+                  className={analyticsRange === 'monthly' ? 'is-active' : ''}
+                  onClick={() => setAnalyticsRange('monthly')}
+                >
+                  Monthly
+                </button>
+              </div>
+            </div>
+
+            <div className={`stats-grid ${analyticsRange === 'monthly' ? 'is-monthly' : ''}`}>
+              {completionBuckets.map((bucket) => (
+                <article key={bucket.key} className="stats-cell" title={`${bucket.label}: ${bucket.ratio}`}>
+                  <span className="stats-label">{bucket.label}</span>
+                  <strong>{bucket.ratio}</strong>
+                </article>
+              ))}
+            </div>
           </div>
         </section>
       </main>
@@ -312,11 +571,14 @@ function ItemRow({
   item,
   editingId,
   editingText,
+  editingNote,
   onEditTextChange,
+  onEditNoteChange,
   onStartEdit,
   onCancelEdit,
   onSaveEdit,
   onToggleComplete,
+  onMarkIncomplete,
   onDelete,
   formatDate
 }) {
@@ -326,27 +588,40 @@ function ItemRow({
     <article className={`item-row ${item.completed ? 'done' : ''}`}>
       <div className="item-main">
         {isEditing ? (
-          <input
-            className="inline-editor"
-            autoFocus
-            value={editingText}
-            onChange={(event) => onEditTextChange(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault();
-                onSaveEdit(item.id);
-              }
-              if (event.key === 'Escape') {
-                onCancelEdit();
-              }
-            }}
-          />
+          <>
+            <input
+              className="inline-editor"
+              autoFocus
+              value={editingText}
+              onChange={(event) => onEditTextChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                  event.preventDefault();
+                  onSaveEdit(item.id);
+                }
+                if (event.key === 'Escape') {
+                  onCancelEdit();
+                }
+              }}
+            />
+            <textarea
+              className="inline-editor inline-note"
+              value={editingNote}
+              onChange={(event) => onEditNoteChange(event.target.value)}
+              placeholder="Optional notes"
+              rows={2}
+            />
+          </>
         ) : (
           <>
             <p>{item.text}</p>
+            {item.note && <small className="item-note">Note: {item.note}</small>}
             <small>
               Created {formatDate(item.createdAt)}
               {item.completedAt ? ` · Completed ${formatDate(item.completedAt)}` : ''}
+              {item.queued && !item.completed ? ' · Checked for next zap' : ''}
+              {item.negatives > 0 ? ` · -${item.negatives} incomplete` : ''}
+              {` · ${item.difficulty ?? 'medium'}`}
             </small>
           </>
         )}
@@ -365,7 +640,10 @@ function ItemRow({
         ) : (
           <>
             <button className="ghost" type="button" onClick={() => onToggleComplete(item.id)}>
-              {item.completed ? 'Undo' : 'Complete'}
+              {item.completed || item.queued ? 'Undo' : '✓ Complete'}
+            </button>
+            <button className="negative" type="button" onClick={() => onMarkIncomplete(item.id)}>
+              - Incomplete
             </button>
             <button className="ghost" type="button" onClick={() => onStartEdit(item)}>
               Edit
